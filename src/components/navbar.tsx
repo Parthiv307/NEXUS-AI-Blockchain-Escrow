@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Zap, LayoutDashboard, PlusCircle, ScrollText, Menu, X } from "lucide-react";
+import { Zap, LayoutDashboard, PlusCircle, ScrollText, FileText, Menu, X } from "lucide-react";
 import { useState } from "react";
 
 const links = [
@@ -11,6 +11,7 @@ const links = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/escrow/create", label: "New Escrow", icon: PlusCircle },
   { href: "/ledger", label: "Ledger", icon: ScrollText },
+  { href: "/resume", label: "Resume AI", icon: FileText },
 ];
 
 export function Navbar() {
