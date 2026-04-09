@@ -58,6 +58,7 @@ export default function CreateEscrowPage() {
   const [counterOffer, setCounterOffer] = useState<{
     suggestedPrice: number;
     message: string;
+    marketRate?: { low: number; mid: number; high: number };
   } | null>(null);
 
   const totalMilestone = milestones.reduce((s, m) => s + m.amount, 0);
@@ -116,7 +117,6 @@ export default function CreateEscrowPage() {
           action: "counter-offer",
           service,
           budget: parsedAmount,
-          marketRate: parsedAmount * 1.5,
         }),
       });
       const data = await res.json();
@@ -124,6 +124,7 @@ export default function CreateEscrowPage() {
         setCounterOffer({
           suggestedPrice: data.suggestedPrice,
           message: data.message,
+          marketRate: data.marketRate,
         });
       }
     } catch {

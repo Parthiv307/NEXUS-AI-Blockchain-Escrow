@@ -19,16 +19,13 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "counter-offer") {
-      const { service, budget, marketRate } = body;
-      const result = await generateCounterOffer(
-        service,
-        budget,
-        marketRate || budget * 1.5
-      );
+      const { service, budget } = body;
+      const result = await generateCounterOffer(service, budget);
       return NextResponse.json({
         status: "counter_offer",
         suggestedPrice: result.suggestedPrice,
         message: result.message,
+        marketRate: result.marketRate,
       });
     }
 

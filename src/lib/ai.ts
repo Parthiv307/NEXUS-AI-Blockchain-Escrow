@@ -205,34 +205,101 @@ How can I assist you today? Try asking about escrow terms, smart contracts, or d
 }
 
 export async function generateEscrowAdvice(service: string, budget: number): Promise<string> {
-  return chatWithOracle(
-    [
-      {
+  try {
+    const genAI = getGeminiClient();
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash",
+      systemInstruction: {
+        parts: [
+          {
+            text: `You are the NEXUS Oracle escrow advisor on the Algorand blockchain. Provide specific, actionable advice for structuring escrow contracts. Always suggest 2-4 milestones with specific percentage allocations and µALGO amounts. Assess whether the budget is fair for the service requested. Include market rate comparison. Be concise but thorough. Format with markdown.`,
+          },
+        ],
         role: "user",
-        content: `I want to create an escrow for "${service}" with a budget of ${budget} µALGO. Suggest optimal milestone structure, timeline, and any concerns about the budget.`,
       },
-    ],
-    `You are the NEXUS Oracle escrow advisor. Provide specific, actionable advice for structuring escrow contracts. Always suggest 2-4 milestones with specific percentage allocations. Be concise but thorough. Format with markdown.`
-  );
+    });
+
+    const result = await model.generateContent(
+      `A user wants to create an escrow for the following service: "${service}"\nTheir proposed budget: ${budget} µALGO\n\nProvide:\n1. Whether this budget is fair, low, or high for this type of service\n2. Estimated market rate range (low / mid / high) in µALGO\n3. Recommended milestone structure with specific amounts\n4. Timeline estimate\n5. Any concerns or risks\n\nBe specific with actual numbers.`
+    );
+    return result.response.text() || "The Oracle could not provide advice.";
+  } catch (error) {
+    console.error("[Gemini] Escrow advice error:", error);
+    return `## Escrow Advisory for "${service}"
+
+**Budget Assessment:** ${budget} µALGO
+
+**Recommended Milestone Structure:**
+1. **Discovery & Planning** (20%): ${Math.round(budget * 0.2).toLocaleString()} µALGO
+2. **Core Development** (40%): ${Math.round(budget * 0.4).toLocaleString()} µALGO
+3. **Testing & Review** (25%): ${Math.round(budget * 0.25).toLocaleString()} µALGO
+4. **Final Delivery** (15%): ${Math.round(budget * 0.15).toLocaleString()} µALGO
+
+*Note: Connect to AI Oracle for real-time market rate analysis.*`;
+  }
 }
 
 export async function generateCounterOffer(
   service: string,
-  budget: number,
-  marketRate: number
-): Promise<{ suggestedPrice: number; message: string }> {
-  const suggestedPrice = Math.round((budget + marketRate) / 2);
-  const message = await chatWithOracle(
-    [
-      {
+  budget: number
+): Promise<{ suggestedPrice: number; message: string; marketRate: { low: number; mid: number; high: number } }> {
+  try {
+    const genAI = getGeminiClient();
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash",
+      systemInstruction: {
+        parts: [
+          {
+            text: `You are the NEXUS Oracle market rate analyzer for blockchain escrow services. You analyze service descriptions and provide accurate market rate estimates in µALGO (micro-Algos). Return ONLY valid JSON — no markdown, no code blocks.`,
+          },
+        ],
         role: "user",
-        content: `The buyer offered ${budget} µALGO for "${service}". Market rate is approximately ${marketRate} µALGO. Generate a counter-offer explanation for ${suggestedPrice} µALGO. Be persuasive but fair.`,
       },
-    ],
-    `You are the NEXUS Oracle negotiation engine. Generate compelling counter-offer explanations. Be specific about why the suggested price is fair. Keep it under 150 words. Format with markdown.`
-  );
+    });
 
-  return { suggestedPrice, message };
+    const result = await model.generateContent(
+      `Analyze the market rate for this blockchain/tech service and the buyer's budget:
+
+Service: "${service}"
+Buyer's Budget: ${budget} µALGO
+
+Return ONLY this JSON structure (no markdown):
+{
+  "marketRate": {
+    "low": <number - low end market rate in µALGO>,
+    "mid": <number - fair mid-range rate>,
+    "high": <number - premium rate>
+  },
+  "suggestedPrice": <number - your recommended fair price considering both buyer budget and market rate>,
+  "budgetAssessment": "<low|fair|high> - how the buyer's budget compares to market",
+  "message": "<2-3 sentence explanation of why this price is fair, referencing market rates. Be specific with numbers.>",
+  "reasoning": "<brief explanation of how you determined the market rate>"
+}`
+    );
+
+    const responseText = result.response.text();
+    let cleanJson = responseText;
+    if (cleanJson.includes("```")) {
+      cleanJson = cleanJson.replace(/```json?\n?/g, "").replace(/```\n?/g, "");
+    }
+    cleanJson = cleanJson.trim();
+
+    const parsed = JSON.parse(cleanJson);
+    return {
+      suggestedPrice: parsed.suggestedPrice || Math.round(budget * 1.3),
+      message: `## Market Rate Analysis\n\n**Assessment:** Your budget of ${budget.toLocaleString()} µALGO is **${parsed.budgetAssessment || "being evaluated"}**.\n\n**Market Rates for "${service}":**\n| Range | Rate |\n|---|---|\n| Low | ${(parsed.marketRate?.low || 0).toLocaleString()} µALGO |\n| Mid | ${(parsed.marketRate?.mid || 0).toLocaleString()} µALGO |\n| High | ${(parsed.marketRate?.high || 0).toLocaleString()} µALGO |\n\n**Suggested Fair Price:** ${(parsed.suggestedPrice || 0).toLocaleString()} µALGO\n\n${parsed.message || ""}\n\n*${parsed.reasoning || ""}*`,
+      marketRate: parsed.marketRate || { low: budget, mid: Math.round(budget * 1.3), high: Math.round(budget * 2) },
+    };
+  } catch (error) {
+    console.error("[Gemini] Counter-offer error:", error);
+    // Fallback with reasonable estimates
+    const estimatedMid = Math.round(budget * 1.4);
+    return {
+      suggestedPrice: estimatedMid,
+      message: `## Market Rate Estimate\n\nBased on general blockchain service pricing, the suggested fair price for "${service}" is approximately **${estimatedMid.toLocaleString()} µALGO**.\n\n*For more accurate real-time market analysis, ensure the AI Oracle is connected.*`,
+      marketRate: { low: budget, mid: estimatedMid, high: Math.round(budget * 2) },
+    };
+  }
 }
 
 export async function generateDisputeResolution(
