@@ -1,81 +1,78 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI, GenerativeModel } from "@google/generative-ai";
 import { extractText } from "unpdf";
 
-function getGeminiClient() {
-  const apiKey = process.env.GOOGLE_GEMINI_API_KEY || "";
-  if (!apiKey) throw new Error("GOOGLE_GEMINI_API_KEY not set");
-  return new GoogleGenerativeAI(apiKey);
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_MODEL = "llama-3.3-70b-versatile";
+
+function getGroqKey(): string {
+  return process.env.GROQ_API_KEY || "";
 }
 
-const ANALYSIS_PROMPT = `Analyze this resume thoroughly and return ONLY valid JSON (no markdown formatting, no code blocks, just raw JSON).
+const SYSTEM_PROMPT = `You are an expert resume reviewer and career coach. You analyze resumes with extreme precision and provide actionable, specific feedback. You identify weaknesses, missing elements, formatting issues, and content problems. You also highlight strengths. You are honest and direct.
 
-Your response MUST match this exact structure:
+Your response MUST be ONLY valid JSON — no markdown code blocks, no extra text, no explanation outside the JSON. Return this exact structure:
 
 {
   "overallScore": <number 0-100>,
-  "summary": "<2-3 sentence overview of the resume quality>",
+  "summary": "<2-3 sentence overview>",
   "sections": [
     {
-      "name": "<section name like Contact Info, Summary, Experience, Education, Skills, etc.>",
+      "name": "<section name>",
       "score": <number 0-100>,
       "status": "<good|warning|critical>",
-      "feedback": "<specific feedback about this section>",
-      "improvements": ["<specific improvement 1>", "<specific improvement 2>"]
+      "feedback": "<specific feedback>",
+      "improvements": ["<improvement 1>", "<improvement 2>"]
     }
   ],
   "criticalIssues": ["<issue 1>", "<issue 2>"],
   "strengths": ["<strength 1>", "<strength 2>"],
-  "missingElements": ["<missing element 1>", "<missing element 2>"],
-  "formattingIssues": ["<formatting issue 1>", "<formatting issue 2>"],
+  "missingElements": ["<missing 1>", "<missing 2>"],
+  "formattingIssues": ["<issue 1>", "<issue 2>"],
   "keywordSuggestions": ["<keyword 1>", "<keyword 2>"],
   "actionPlan": [
     {
       "priority": "<high|medium|low>",
-      "action": "<specific action to take>",
-      "impact": "<expected impact of this action>"
+      "action": "<specific action>",
+      "impact": "<expected impact>"
     }
   ],
   "atsScore": <number 0-100>,
   "atsIssues": ["<ATS issue 1>", "<ATS issue 2>"]
 }
 
-Be brutally specific. Don't say "improve your experience section" — say exactly WHAT to improve and HOW.`;
+Analyze: contact info, summary quality, experience (action verbs, quantified achievements), education, skills, formatting, grammar, ATS compatibility, missing sections, overall impact. Be brutally specific.`;
 
-async function generateWithRetry(
-  model: GenerativeModel,
-  content: string,
-  retries = 4,
-  baseDelay = 4000
-): Promise<string> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const result = await model.generateContent(content);
-      return result.response.text();
-    } catch (error: unknown) {
-      const err = error as { message?: string; status?: number };
-      const msg = err.message || "";
-      const isRetryable =
-        err.status === 429 ||
-        err.status === 503 ||
-        msg.includes("429") ||
-        msg.includes("503") ||
-        msg.includes("Service Unavailable") ||
-        msg.includes("high demand") ||
-        msg.includes("RESOURCE_EXHAUSTED");
+async function callGroq(resumeText: string): Promise<string> {
+  const apiKey = getGroqKey();
+  if (!apiKey) throw new Error("GROQ_API_KEY not set");
 
-      if (isRetryable && attempt < retries) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        console.warn(
-          `[Resume] Retryable error (${err.status || "unknown"}). Retrying in ${delay}ms (attempt ${attempt + 1}/${retries})...`
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        continue;
-      }
-      throw error;
-    }
+  const res = await fetch(GROQ_API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `Analyze this resume and return ONLY valid JSON:\n\n${resumeText.substring(0, 6000)}`,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 4096,
+    }),
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Groq API ${res.status}: ${errBody.substring(0, 200)}`);
   }
-  throw new Error("Exhausted retries");
+
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "";
 }
 
 export async function POST(req: NextRequest) {
@@ -101,7 +98,6 @@ export async function POST(req: NextRequest) {
         try {
           const uint8 = new Uint8Array(arrayBuffer);
           const pdfResult = await extractText(uint8);
-          // unpdf returns { totalPages, text: string[] } — text is array of strings per page
           resumeText = Array.isArray(pdfResult.text)
             ? pdfResult.text.join("\n\n")
             : String(pdfResult.text);
@@ -110,13 +106,12 @@ export async function POST(req: NextRequest) {
           return NextResponse.json(
             {
               error:
-                "Could not read the PDF file. Please try a different file or paste the text directly.",
+                "Could not read the PDF. Please try a different file or paste text directly.",
             },
             { status: 400 }
           );
         }
       } else {
-        // Text files
         resumeText = new TextDecoder().decode(arrayBuffer);
       }
     }
@@ -125,32 +120,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Could not extract enough text from the file. Please upload a valid resume PDF with readable text.",
+            "Could not extract enough text. Please upload a valid resume PDF with readable text.",
         },
         { status: 400 }
       );
     }
 
-    const genAI = getGeminiClient();
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
-      systemInstruction: {
-        parts: [
-          {
-            text: "You are an expert resume reviewer and career coach. Analyze resumes with precision and return ONLY valid JSON — no markdown code blocks, no extra text.",
-          },
-        ],
-        role: "user",
-      },
-    });
+    // Call Groq AI (much faster than Gemini, ~2-3 seconds)
+    const responseText = await callGroq(resumeText);
 
-    // Send only extracted text (much lighter on tokens than base64 PDF)
-    const responseText = await generateWithRetry(
-      model,
-      `${ANALYSIS_PROMPT}\n\n--- RESUME TEXT ---\n\n${resumeText.substring(0, 8000)}`
-    );
-
-    // Parse JSON from response
+    // Parse JSON
     let cleanJson = responseText;
     if (cleanJson.includes("```")) {
       cleanJson = cleanJson.replace(/```json?\n?/g, "").replace(/```\n?/g, "");
@@ -167,7 +146,7 @@ export async function POST(req: NextRequest) {
           summary: responseText.substring(0, 500),
           sections: [],
           criticalIssues: [
-            "Analysis returned unstructured feedback — see summary for details",
+            "Analysis returned unstructured feedback — see summary",
           ],
           strengths: [],
           missingElements: [],
@@ -183,16 +162,9 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     const errObj = error instanceof Error ? error : new Error(String(error));
     console.error("Resume analysis error:", errObj.message);
-    console.error("Resume analysis stack:", errObj.stack);
-    const errMsg = errObj.message;
-    const isRetryable = errMsg.includes("429") || errMsg.includes("503") || errMsg.includes("high demand") || errMsg.includes("Service Unavailable");
     return NextResponse.json(
-      {
-        error: isRetryable
-          ? "AI is temporarily busy due to high demand. Please wait 30 seconds and try again — the system will auto-retry."
-          : `Resume analysis failed. Please try again.`,
-      },
-      { status: isRetryable ? 429 : 500 }
+      { error: `Resume analysis failed: ${errObj.message.substring(0, 150)}` },
+      { status: 500 }
     );
   }
 }
