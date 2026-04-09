@@ -45,8 +45,8 @@ Be brutally specific. Don't say "improve your experience section" — say exactl
 async function generateWithRetry(
   model: GenerativeModel,
   content: string,
-  retries = 3,
-  baseDelay = 3000
+  retries = 4,
+  baseDelay = 4000
 ): Promise<string> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -54,14 +54,20 @@ async function generateWithRetry(
       return result.response.text();
     } catch (error: unknown) {
       const err = error as { message?: string; status?: number };
-      const is429 =
+      const msg = err.message || "";
+      const isRetryable =
         err.status === 429 ||
-        (err.message && err.message.includes("429"));
+        err.status === 503 ||
+        msg.includes("429") ||
+        msg.includes("503") ||
+        msg.includes("Service Unavailable") ||
+        msg.includes("high demand") ||
+        msg.includes("RESOURCE_EXHAUSTED");
 
-      if (is429 && attempt < retries) {
+      if (isRetryable && attempt < retries) {
         const delay = baseDelay * Math.pow(2, attempt);
         console.warn(
-          `[Resume] Rate limited. Retrying in ${delay}ms (attempt ${attempt + 1}/${retries})...`
+          `[Resume] Retryable error (${err.status || "unknown"}). Retrying in ${delay}ms (attempt ${attempt + 1}/${retries})...`
         );
         await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
@@ -175,16 +181,18 @@ export async function POST(req: NextRequest) {
       });
     }
   } catch (error) {
-    console.error("Resume analysis error:", error);
-    const errMsg = error instanceof Error ? error.message : "Unknown error";
-    const isRateLimit = errMsg.includes("429");
+    const errObj = error instanceof Error ? error : new Error(String(error));
+    console.error("Resume analysis error:", errObj.message);
+    console.error("Resume analysis stack:", errObj.stack);
+    const errMsg = errObj.message;
+    const isRetryable = errMsg.includes("429") || errMsg.includes("503") || errMsg.includes("high demand") || errMsg.includes("Service Unavailable");
     return NextResponse.json(
       {
-        error: isRateLimit
-          ? "AI is temporarily busy due to high usage. Please wait 15-30 seconds and try again."
-          : "Failed to analyze resume. Please try again.",
+        error: isRetryable
+          ? "AI is temporarily busy due to high demand. Please wait 30 seconds and try again — the system will auto-retry."
+          : `Resume analysis failed. Please try again.`,
       },
-      { status: isRateLimit ? 429 : 500 }
+      { status: isRetryable ? 429 : 500 }
     );
   }
 }
